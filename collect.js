@@ -19,9 +19,10 @@
  */
 
 const CDP = require("chrome-remote-interface");
-const { execFileSync } = require("child_process");
+const { execFileSync, exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { generateViewer } = require("./viewer");
 
 // ---------------------------------------------------------------------------
 // CONFIG
@@ -428,6 +429,23 @@ async function main() {
   // Run synthesis
   await synthesize(query, responseFiles, promptDir);
 
+  // Generate HTML viewer and auto-open
+  try {
+    const synthPath = path.join(promptDir, "synthesis.md");
+    const viewerResponses = responseFiles.map((r) => {
+      const eng = ENGINES.find((e) => e.name === r.engine);
+      const filePath = r.path;
+      const stat = fs.statSync(filePath);
+      return { engine: r.engine, slug: eng ? eng.slug : r.engine.toLowerCase(), status: "ok", chars: stat.size };
+    });
+    const htmlPath = generateViewer(promptDir, query, viewerResponses, fs.existsSync(synthPath) ? synthPath : null);
+    exec(`start "" "${htmlPath}"`, (err) => {
+      if (err) console.log(`  !!  Could not auto-open viewer: ${err.message}`);
+    });
+  } catch (err) {
+    console.log(`  !!  Viewer generation failed: ${err.message}`);
+  }
+
   console.log(`\nDone. Output: ${promptDir}\n`);
 }
 
@@ -526,6 +544,20 @@ module.exports = {
         result.synthesisPath = synthesisPath;
         result.synthesisFile = "synthesis.md";
       }
+    }
+
+    // Generate HTML viewer
+    try {
+      const synthPath = path.join(promptDir, "synthesis.md");
+      const htmlPath = generateViewer(
+        promptDir,
+        query,
+        responses,
+        fs.existsSync(synthPath) ? synthPath : null
+      );
+      result.viewerFile = "index.html";
+    } catch (err) {
+      console.log(`  !!  Viewer generation failed: ${err.message}`);
     }
 
     return result;

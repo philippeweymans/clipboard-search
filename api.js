@@ -12,6 +12,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const CDP = require("chrome-remote-interface");
+const swaggerUi = require("swagger-ui-express");
 
 const {
   ENGINES,
@@ -42,6 +43,158 @@ const app = express();
 app.use(express.json());
 
 // ---------------------------------------------------------------------------
+// OPENAPI SPEC + SWAGGER UI
+// ---------------------------------------------------------------------------
+const swaggerSpec = {
+  openapi: "3.0.3",
+  info: {
+    title: "Clipboard Search API",
+    version: "1.1.0",
+    description:
+      "Multi-AI query response collector — submit prompts to AI engines via Chrome CDP, collect responses, and synthesize with Claude.",
+  },
+  servers: [{ url: "http://localhost:3222" }],
+  paths: {
+    "/health": {
+      get: {
+        summary: "Health check",
+        description: "Check Chrome CDP connectivity.",
+        tags: ["System"],
+        responses: {
+          200: { description: "CDP connected", content: { "application/json": { schema: { type: "object", properties: { status: { type: "string" }, chrome: { type: "object" } } } } } },
+          503: { description: "CDP not connected" },
+        },
+      },
+    },
+    "/tabs": {
+      get: {
+        summary: "List Chrome tabs",
+        description: "List open Chrome page tabs via CDP.",
+        tags: ["Chrome"],
+        responses: {
+          200: { description: "Tab list", content: { "application/json": { schema: { type: "object", properties: { count: { type: "integer" }, tabs: { type: "array", items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" }, url: { type: "string" } } } } } } } } },
+          503: { description: "Chrome not connected" },
+        },
+      },
+    },
+    "/engines": {
+      get: {
+        summary: "List configured AI engines",
+        description: "Returns engines (response collectors) and submitters (prompt senders).",
+        tags: ["System"],
+        responses: {
+          200: { description: "Engine list", content: { "application/json": { schema: { type: "object", properties: { engines: { type: "array" }, submitters: { type: "array" } } } } } },
+        },
+      },
+    },
+    "/submit": {
+      post: {
+        summary: "Submit prompts",
+        description: "Click submit/send buttons on AI engine tabs.",
+        tags: ["Pipeline"],
+        responses: {
+          200: { description: "Submit results" },
+          503: { description: "Chrome not connected" },
+        },
+      },
+    },
+    "/collect": {
+      post: {
+        summary: "Collect responses",
+        description: "Collect responses from AI engine tabs and optionally synthesize.",
+        tags: ["Pipeline"],
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  timeout: { type: "integer", default: 90, description: "Per-engine timeout in seconds" },
+                  synthesize: { type: "boolean", default: true, description: "Run cross-LLM synthesis" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "Collected responses" },
+          503: { description: "Chrome not connected" },
+          504: { description: "Collection timed out" },
+        },
+      },
+    },
+    "/search": {
+      post: {
+        summary: "Full pipeline",
+        description: "Submit prompts, wait, collect responses, and synthesize.",
+        tags: ["Pipeline"],
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  timeout: { type: "integer", default: 90 },
+                  synthesize: { type: "boolean", default: true },
+                  wait: { type: "integer", default: 5, description: "Seconds to wait after submit" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "Full pipeline results" },
+          503: { description: "Chrome not connected" },
+          504: { description: "Pipeline timed out" },
+        },
+      },
+    },
+    "/responses": {
+      get: {
+        summary: "List response folders",
+        description: "List all response collection folders with metadata.",
+        tags: ["Responses"],
+        responses: {
+          200: { description: "Folder list" },
+        },
+      },
+    },
+    "/responses/{folder}": {
+      get: {
+        summary: "Get folder contents",
+        description: "List files in a specific response folder.",
+        tags: ["Responses"],
+        parameters: [{ name: "folder", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          200: { description: "Folder contents" },
+          404: { description: "Folder not found" },
+        },
+      },
+    },
+    "/responses/{folder}/{file}": {
+      get: {
+        summary: "Get response file",
+        description: "Get contents of a specific response file (markdown or HTML viewer).",
+        tags: ["Responses"],
+        parameters: [
+          { name: "folder", in: "path", required: true, schema: { type: "string" } },
+          { name: "file", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "File content" },
+          404: { description: "File not found" },
+        },
+      },
+    },
+  },
+};
+
+app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: ".swagger-ui .topbar { display: none }",
+  customSiteTitle: "Clipboard Search API",
+}));
+
+// ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
 
@@ -64,8 +217,8 @@ function asyncHandler(fn) {
 // ROUTES
 // ---------------------------------------------------------------------------
 
-// GET / — redirect to /health
-app.get("/", (_req, res) => res.redirect("/health"));
+// GET / — redirect to /docs (Swagger UI)
+app.get("/", (_req, res) => res.redirect("/docs"));
 
 // GET /health — CDP connectivity check
 app.get(
@@ -266,6 +419,12 @@ app.get("/responses/:folder/:file", (req, res) => {
 
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: "File not found" });
+  }
+
+  // Serve HTML files directly
+  if (req.params.file.endsWith(".html")) {
+    const html = fs.readFileSync(filePath, "utf-8");
+    return res.type("text/html").send(html);
   }
 
   const content = fs.readFileSync(filePath, "utf-8");
