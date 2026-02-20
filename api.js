@@ -27,6 +27,7 @@ const {
 } = require("./collect");
 
 const { SUBMITTERS, submitAll } = require("./submit");
+const { getDashboardHtml } = require("./dashboard");
 
 // ---------------------------------------------------------------------------
 // CONFIG
@@ -213,12 +214,39 @@ function asyncHandler(fn) {
   return (req, res, next) => fn(req, res, next).catch(next);
 }
 
+/** SSE — connected clients */
+const sseClients = new Set();
+
+function sseBroadcast(event, data) {
+  const payload = JSON.stringify({ type: event, ...data });
+  for (const client of sseClients) {
+    client.write(`data: ${payload}\n\n`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ROUTES
 // ---------------------------------------------------------------------------
 
-// GET / — redirect to /docs (Swagger UI)
-app.get("/", (_req, res) => res.redirect("/docs"));
+// GET / — redirect to /dashboard
+app.get("/", (_req, res) => res.redirect("/dashboard"));
+
+// GET /dashboard — live SPA dashboard
+app.get("/dashboard", (_req, res) => {
+  res.type("text/html").send(getDashboardHtml());
+});
+
+// GET /api/events — SSE endpoint for live collection progress
+app.get("/api/events", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+  });
+  res.write(":ok\n\n");
+  sseClients.add(res);
+  req.on("close", () => sseClients.delete(res));
+});
 
 // GET /health — CDP connectivity check
 app.get(
@@ -291,7 +319,7 @@ app.post(
     const doSynthesize = req.body?.synthesize !== false;
 
     try {
-      const result = await collectAll({ timeout, doSynthesize });
+      const result = await collectAll({ timeout, doSynthesize, onProgress: sseBroadcast });
       res.json({
         promptDir: result.folderName,
         query: result.query,
@@ -330,7 +358,7 @@ app.post(
       await new Promise((resolve) => setTimeout(resolve, waitSec * 1000));
 
       // Step 3: Collect responses (+ optional synthesis)
-      const result = await collectAll({ timeout, doSynthesize });
+      const result = await collectAll({ timeout, doSynthesize, onProgress: sseBroadcast });
 
       res.json({
         promptDir: result.folderName,

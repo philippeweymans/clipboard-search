@@ -481,6 +481,7 @@ module.exports = {
   async collectAll(opts = {}) {
     const timeout = opts.timeout || DEFAULT_TIMEOUT;
     const doSynthesize = opts.doSynthesize !== false;
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : () => {};
 
     const targets = await CDP.List({ host: CDP_HOST, port: CDP_PORT });
     const query = await extractQuery(targets);
@@ -498,6 +499,9 @@ module.exports = {
       "utf-8"
     );
 
+    // Notify: started
+    onProgress("started", { query, engines: ENGINES.map((e) => e.name) });
+
     // Collect from each engine
     const responses = [];
     const responseFiles = [];
@@ -509,6 +513,7 @@ module.exports = {
 
       if (!tab) {
         responses.push({ engine: engine.name, slug: engine.slug, status: "no_tab", text: null });
+        onProgress("engine_done", { engine: engine.name, status: "no_tab", chars: 0 });
         continue;
       }
 
@@ -526,9 +531,11 @@ module.exports = {
         md += text;
         responseFiles.push({ engine: engine.name, path: filePath });
         responses.push({ engine: engine.name, slug: engine.slug, status: "ok", chars: text.length, file: `${engine.slug}.md` });
+        onProgress("engine_done", { engine: engine.name, status: "ok", chars: text.length });
       } else {
         md += `*No response collected*`;
         responses.push({ engine: engine.name, slug: engine.slug, status: "failed", text: null });
+        onProgress("engine_done", { engine: engine.name, status: "failed", chars: 0 });
       }
 
       fs.writeFileSync(filePath, md, "utf-8");
@@ -538,6 +545,7 @@ module.exports = {
 
     // Synthesis
     if (doSynthesize && responseFiles.length >= 2) {
+      onProgress("synthesizing", {});
       await synthesize(query, responseFiles, promptDir);
       const synthesisPath = path.join(promptDir, "synthesis.md");
       if (fs.existsSync(synthesisPath)) {
@@ -560,6 +568,7 @@ module.exports = {
       console.log(`  !!  Viewer generation failed: ${err.message}`);
     }
 
+    onProgress("complete", { folderName, query, responses });
     return result;
   },
 };
